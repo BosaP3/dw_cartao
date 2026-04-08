@@ -34,6 +34,13 @@ def get_engine():
 
 # DDL
 DDL = """
+
+DROP TABLE IF EXISTS fato_transacao CASCADE;
+DROP TABLE IF EXISTS dim_data CASCADE;
+DROP TABLE IF EXISTS dim_titular CASCADE;
+DROP TABLE IF EXISTS dim_categoria CASCADE;
+DROP TABLE IF EXISTS dim_estabelecimento CASCADE;
+
 -- Dimensão Data
 CREATE TABLE IF NOT EXISTS dim_data (
     id_data     SERIAL PRIMARY KEY,
@@ -190,14 +197,27 @@ def normalizar_colunas(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def converter_numero(serie: pd.Series) -> pd.Series:
-    """Converte string com vírgula decimal para float (ex.: '1.234,56' → 1234.56)."""
-    return (
-        serie
-        .str.strip()
-        .str.replace(r"\.", "", regex=True)
-        .str.replace(",", ".", regex=False)
-        .pipe(pd.to_numeric, errors="coerce")
-    )
+    """
+    Converte string numérica para float, suportando dois formatos:
+      - Padrão BR com vírgula decimal: '1.234,56' → 1234.56
+      - Padrão com ponto decimal:      '1234.56'  → 1234.56
+    Detecta pelo último separador: se for vírgula, é BR; se for ponto, já é float.
+    """
+    def _parse(val):
+        if pd.isna(val):
+            return None
+        s = re.sub(r"[^\d.,-]", "", str(val).strip())
+        if not s:
+            return None
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+        try:
+            return float(s)
+        except ValueError:
+            return None
+    return serie.apply(_parse)
 
 
 def parsear_parcela(serie: pd.Series):
@@ -284,11 +304,20 @@ def transformar(raw: pd.DataFrame) -> pd.DataFrame:
             df[col] = None
 
     # 8. Deduplicação de transações internacionais
-    #    Regra: quando valor_usd preenchido E valor_brl zerado → linha duplicada
-    mask_usd_sem_brl = (df["valor_usd"].notna()) & (df["valor_brl"].fillna(0) == 0)
-    removidas_usd = mask_usd_sem_brl.sum()
-    df = df[~mask_usd_sem_brl].copy()
-    print("Linhas removidas por deduplicação USD-sem-BRL: %d", removidas_usd)
+    grupos_com_usd = (
+        df[df["valor_usd"].fillna(0) > 0]
+        .groupby(["data_compra", "descricao"])
+        .ngroups
+    )
+    mask_taxa_iof = (
+        df["valor_usd"].fillna(0) == 0
+    ) & df.duplicated(subset=["data_compra", "descricao"], keep=False) & (
+        df.groupby(["data_compra", "descricao"])["valor_usd"]
+        .transform(lambda g: g.fillna(0).gt(0).any())
+    )
+    removidas_usd = mask_taxa_iof.sum()
+    df = df[~mask_taxa_iof].copy()
+    print("Linhas removidas por deduplicação USD (taxa/IOF): %d", removidas_usd)
     print("Linhas após deduplicação: %d", len(df))
 
     # 9. Parsear parcelas
@@ -474,7 +503,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    inicio = datetime.now()
+
     print("---")
     print("Iniciando ETL")
     print("---")
