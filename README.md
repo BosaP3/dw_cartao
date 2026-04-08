@@ -1,89 +1,114 @@
-# ETL — Data Warehouse de Transações de Cartão de Crédito
+# DW Transações de Cartão de Crédito — BI Project
 
-## Pré-requisitos
+## Estrutura do Projeto
 
-- Python 3.9+
-- PostgreSQL instalado e rodando
-- Banco de dados `dw_cartao` criado no PostgreSQL
-- Docker
-
-## 1. Criar o banco de dados no PostgreSQL
-
-```sql
--- Execute o ambiente
-docker-compose up -d
+```
+.
+├── etl_pipeline.py        # Pipeline ETL (Extract → Transform → Load)
+├── analytics_queries.py   # Consultas analíticas e validações de qualidade
+├── dashboard.py           # Dashboard interativo (Streamlit + Plotly)
+├── bases/                 # CSVs das faturas (Fatura_AAAA-MM-DD.csv)
+├── resultados_analiticos/ # CSVs exportados pelo analytics_queries.py (gerado)
+└── etl_pipeline.log       # Log do ETL (gerado)
 ```
 
-## 2. Instalar dependências Python
+## Instalação
 
 ```bash
-pip install pandas psycopg2-binary sqlalchemy
+pip install pandas psycopg2-binary sqlalchemy streamlit plotly tabulate
 ```
 
-## 3. Estrutura de pastas esperada
+## Variáveis de Ambiente (opcional)
 
-```
-PROJETO_BI/
-├── bases/
-│   ├── Fatura_2025-03-20.csv
-│   ├── Fatura_2025-04-20.csv
-│   └── ... (demais arquivos)
-├── etl_pipeline.py
-└── README.md
+```bash
+export DB_HOST=localhost
+export DB_PORT=5433
+export DB_NAME=dw_cartao
+export DB_USER=postgres
+export DB_PASSWORD=postgres
 ```
 
-## 4. Configurar as credenciais
+---
 
-Abra o arquivo `etl_pipeline.py` e edite o bloco `DB_CONFIG`:
+## 1. ETL (`etl_pipeline.py`)
 
-```python
-DB_CONFIG = {
-    "host":     "localhost",
-    "port":     5432,
-    "database": "dw_cartao",
-    "user":     "postgres",
-    "password": "SUA_SENHA_AQUI",  # <-- altere aqui
-}
-```
-
-## 5. Executar o ETL
-
+### Executar carga completa
 ```bash
 python etl_pipeline.py
 ```
 
-## O que o script faz
-
-| Etapa | Descrição |
-|-------|-----------|
-| **Extract** | Lê todos os `Fatura_*.csv` da pasta `bases/` com separador `;` e encoding UTF-8 |
-| **Transform** | Normaliza colunas, converte datas e valores, limpa campos nulos/traço, deduplica transações internacionais, extrai parcelas |
-| **Load** | Cria o schema Star Schema no PostgreSQL e insere dimensões + fato |
-| **Validação** | Exibe contagens e totais no console para conferência |
-
-## Modelo dimensional (Star Schema)
-
-```
-DIM_TITULAR ──────────────────────────────┐
-DIM_DATA ──────────────── FATO_TRANSACAO──┤
-DIM_CATEGORIA ────────────────────────────┤
-DIM_ESTABELECIMENTO ──────────────────────┘
+### Re-carga total (limpa o DW antes)
+```bash
+python etl_pipeline.py --full-reload
 ```
 
-## Log
-
-O script gera um arquivo `etl.log` na mesma pasta com todo o histórico de execução.
-
-## Regras de negócio aplicadas
-
-- Linhas com data inválida são descartadas (com aviso no log)
-- Categoria vazia ou `-` → `"Não Categorizado"`
-- Descrição vazia ou `-` → `"Não Informado"`
-- Parcela `"Única"` → `num_parcela=1`, `total_parcelas=1`
-- Transações internacionais duplicadas (linha com `valor_brl=0`) são removidas
-- O script é **idempotente** para o schema (usa `CREATE TABLE IF NOT EXISTS`)
-- Para recarregar os dados do zero, truncate as tabelas antes de rodar novamente:
-
-```sql
-TRUNCATE fato_transacao, dim_data, dim_titular, dim_categoria, dim_estabelecimento RESTART IDENTITY CASCADE;
+### Carga incremental (só novos arquivos)
+```bash
+python etl_pipeline.py --incremental
 ```
+
+### CSVs em outro diretório
+```bash
+python etl_pipeline.py --csv-dir /caminho/para/faturas
+```
+
+---
+
+## 2. Consultas e Validações (`analytics_queries.py`)
+
+### Todas as análises + validações
+```bash
+python analytics_queries.py
+```
+
+### Só uma query específica
+```bash
+python analytics_queries.py --query top_categorias
+python analytics_queries.py --query evolucao_mensal
+python analytics_queries.py --query kpis
+```
+
+### Queries disponíveis
+| Nome                  | Descrição                                      |
+|-----------------------|------------------------------------------------|
+| `kpis`                | KPIs gerais do período                         |
+| `gasto_titular`       | Gasto total por titular                        |
+| `gasto_titular_mensal`| Gasto por titular e mês                        |
+| `top_categorias`      | Top 10 categorias por valor                    |
+| `categorias_por_titular` | Gasto por categoria e titular               |
+| `evolucao_mensal`     | Série temporal mensal                          |
+| `comparativo_titulares` | Comparativo de métricas entre titulares      |
+| `top_estabelecimentos`| Top 15 estabelecimentos por valor              |
+| `parcelamento`        | À vista vs parcelado                           |
+| `dia_semana`          | Volume por dia da semana                       |
+| `estornos`            | Estornos e créditos                            |
+| `internacionais`      | Transações em USD                              |
+
+### Exportar resultados para CSV
+```bash
+python analytics_queries.py --exportar
+```
+
+### Só validações de qualidade
+```bash
+python analytics_queries.py --validar-apenas
+```
+
+---
+
+## 3. Dashboard (`dashboard.py`)
+
+```bash
+streamlit run dashboard.py
+```
+
+Abre em `http://localhost:8501` com:
+- Filtros: período (ano), titular(es), categoria(s)
+- KPIs gerais (8 indicadores)
+- Evolução mensal com gráfico de barras + ticket médio
+- Top 10 categorias (barra + pizza)
+- Gasto por titular
+- Transações por dia da semana
+- Comportamento de parcelamento
+- Top N estabelecimentos (configurável no sidebar)
+- Tabelas detalhadas por titular e categoria
